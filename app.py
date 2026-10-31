@@ -4,6 +4,7 @@ import re
 import hmac
 import time
 import threading
+import json
 
 from datetime import datetime, timezone
 from flask import Flask, jsonify, request
@@ -11,8 +12,9 @@ from fc_clubs_api import FC27API
 
 app = Flask(__name__)
 
-VERSION = "7.8.0"
+VERSION = "7.8.1"
 CACHE_SECONDS = 300
+MAX_RESPONSE_BYTES = 1_500_000
 
 cache = {}
 cache_lock = threading.Lock()
@@ -28,11 +30,9 @@ def reply(data, status=200):
 
 @app.before_request
 def protect_bridge():
-    # La santé du serveur reste consultable.
     if request.path in ("/", "/health"):
         return None
 
-    # Les autres chemins exigent une clé serveur.
     expected = os.environ.get(
         "FC27_BRIDGE_SECRET", ""
     )
@@ -94,10 +94,42 @@ def handle_error(error):
         "ok": False,
         "error": type(error).__name__,
         "message": (
-            "Impossible de récupérer les données EA. "
-            "Consulte les logs Render."
+            "Données EA indisponibles. "
+            "Consulter les logs Render."
         )
     }, 502)
+
+
+def validate_club_id(club_id):
+    return bool(
+        re.fullmatch(r"\d{1,16}", club_id)
+    )
+
+
+def safe_ea_data(data):
+    """
+    Vérifie que les données peuvent être
+    renvoyées en JSON et limite leur taille.
+    """
+    encoded = json.dumps(
+        data,
+        ensure_ascii=False,
+        default=str
+    )
+
+    if len(encoded.encode("utf-8")) > MAX_RESPONSE_BYTES:
+        raise ValueError(
+            "EA_RESPONSE_TOO_LARGE"
+        )
+
+    return json.loads(encoded)
+
+
+def count_items(data):
+    if isinstance(data, (list, tuple, dict)):
+        return len(data)
+
+    return None
 
 
 @app.get("/")
@@ -164,7 +196,7 @@ def search():
 
 @app.get("/api/club/<club_id>/summary")
 def club_summary(club_id):
-    if not re.fullmatch(r"\d{1,16}", club_id):
+    if not validate_club_id(club_id):
         return reply({
             "ok": False,
             "error": "INVALID_CLUB_ID"
@@ -187,8 +219,8 @@ def club_summary(club_id):
             return {
                 "ok": True,
                 "clubId": int(club_id),
-                "membersCount": len(members),
-                "friendlyMatchesCount": len(matches),
+                "membersCount": count_items(members),
+                "friendlyMatchesCount": count_items(matches),
                 "eaConnection": "success",
                 "readOnly": True,
                 "testedAt": datetime.now(
@@ -207,10 +239,93 @@ def club_summary(club_id):
         return handle_error(error)
 
 
+@app.get("/api/club/<club_id>/members")
+def club_members(club_id):
+    if not validate_club_id(club_id):
+        return reply({
+            "ok": False,
+            "error": "INVALID_CLUB_ID"
+        }, 400)
+
+    try:
+        def load():
+            api = FC27API()
+
+            members = api.get_member_stats(
+                int(club_id)
+            )
+
+            members = safe_ea_data(members)
+
+            return {
+                "ok": True,
+                "clubId": int(club_id),
+                "source": "EA FC27",
+                "readOnly": True,
+                "membersCount": count_items(members),
+                "data": members,
+                "fetchedAt": datetime.now(
+                    timezone.utc
+                ).isoformat()
+            }
+
+        result = cached_result(
+            "members:" + club_id,
+            load
+        )
+
+        return reply(result)
+
+    except Exception as error:
+        return handle_error(error)
+
+
+@app.get("/api/club/<club_id>/friendlies")
+def club_friendlies(club_id):
+    if not validate_club_id(club_id):
+        return reply({
+            "ok": False,
+            "error": "INVALID_CLUB_ID"
+        }, 400)
+
+    try:
+        def load():
+            api = FC27API()
+
+            matches = api.get_club_matches(
+                int(club_id),
+                match_type="friendlyMatch",
+                count=10
+            )
+
+            matches = safe_ea_data(matches)
+
+            return {
+                "ok": True,
+                "clubId": int(club_id),
+                "source": "EA FC27",
+                "matchType": "friendlyMatch",
+                "readOnly": True,
+                "matchesCount": count_items(matches),
+                "data": matches,
+                "fetchedAt": datetime.now(
+                    timezone.utc
+                ).isoformat()
+            }
+
+        result = cached_result(
+            "friendlies:" + club_id,
+            load
+        )
+
+        return reply(result)
+
+    except Exception as error:
+        return handle_error(error)
+
+
 @app.get("/test")
 def test():
-    # Test historique conservé,
-    # mais désormais protégé par la clé.
     return club_summary("66712")
 
 
