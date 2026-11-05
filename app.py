@@ -13,7 +13,7 @@ from fc_clubs_api import FC27API
 
 app = Flask(__name__)
 
-VERSION = "7.8.3"
+VERSION = "7.8.4"
 CACHE_SECONDS = 300
 MAX_RESPONSE_BYTES = 1_500_000
 
@@ -357,7 +357,7 @@ def club_recent_matches(club_id):
             unique = {}
             for match in rows:
                 unique.setdefault(str(match.get("matchId")), match)
-            data = safe_ea_data(list(unique.values())[:10])
+            data = safe_ea_data(list(unique.values()))
             return {"ok": True, "clubId": int(club_id), "source": "EA FC27", "readOnly": True,
                     "data": data, "matchesCount": len(data), "unavailableTypes": sorted(unavailable),
                     "fetchedAt": datetime.now(timezone.utc).isoformat()}

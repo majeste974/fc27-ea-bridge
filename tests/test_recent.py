@@ -29,3 +29,13 @@ class RecentTests(unittest.TestCase):
         self.assertEqual(self.request().status_code,502)
     def test_auth_required(self):
         self.assertEqual(self.client.get('/api/club/66712/matches').status_code,401)
+
+class CompleteRecentTests(RecentTests):
+    def test_all_returned_rows_are_kept(self):
+        def batch(api,club_id,**kwargs):
+            kind=kwargs['match_type']
+            return [{'matchId':kind+str(i),'timestamp':i,'clubs':{'66712':{},'2':{}}} for i in range(10)]
+        with patch.object(FakeAPI,'get_club_matches',batch):
+            r=self.request()
+        self.assertEqual(r.status_code,200)
+        self.assertEqual(len(r.json['data']),30)
