@@ -5,6 +5,7 @@ import hmac
 import time
 import threading
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from datetime import datetime, timezone
 from flask import Flask, jsonify, request
@@ -12,7 +13,7 @@ from fc_clubs_api import FC27API
 
 app = Flask(__name__)
 
-VERSION = "7.8.2"
+VERSION = "7.8.3"
 CACHE_SECONDS = 300
 MAX_RESPONSE_BYTES = 1_500_000
 
@@ -56,7 +57,7 @@ def protect_bridge():
     return None
 
 
-def cached_result(key, callback):
+def cached_result(key, callback, ttl=CACHE_SECONDS):
     now = time.time()
 
     with cache_lock:
@@ -75,7 +76,7 @@ def cached_result(key, callback):
             cache.clear()
 
         cache[key] = {
-            "expires": time.time() + CACHE_SECONDS,
+            "expires": time.time() + ttl,
             "result": result
         }
 
@@ -326,6 +327,41 @@ def club_friendlies(club_id):
 
         return reply(result)
 
+    except Exception as error:
+        return handle_error(error)
+
+
+@app.get("/api/club/<club_id>/matches")
+def club_recent_matches(club_id):
+    if not validate_club_id(club_id):
+        return reply({"ok": False, "error": "INVALID_CLUB_ID"}, 400)
+    try:
+        def load():
+            kinds = ("friendlyMatch", "leagueMatch", "playoffMatch")
+            rows, unavailable = [], []
+            def read(kind):
+                data = FC27API().get_club_matches(int(club_id), match_type=kind, count=10, output="raw")
+                if not isinstance(data, list):
+                    raise ValueError("Invalid EA response")
+                return [{**m, "relMatchType": kind} for m in data if isinstance(m, dict)]
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = {pool.submit(read, kind): kind for kind in kinds}
+                for future in as_completed(futures):
+                    try:
+                        rows.extend(future.result())
+                    except Exception:
+                        unavailable.append(futures[future])
+            if len(unavailable) == len(kinds):
+                raise RuntimeError("All EA categories unavailable")
+            rows.sort(key=lambda m: int(m.get("timestamp") or 0), reverse=True)
+            unique = {}
+            for match in rows:
+                unique.setdefault(str(match.get("matchId")), match)
+            data = safe_ea_data(list(unique.values())[:10])
+            return {"ok": True, "clubId": int(club_id), "source": "EA FC27", "readOnly": True,
+                    "data": data, "matchesCount": len(data), "unavailableTypes": sorted(unavailable),
+                    "fetchedAt": datetime.now(timezone.utc).isoformat()}
+        return reply(cached_result("recent:" + club_id, load, ttl=60))
     except Exception as error:
         return handle_error(error)
 
