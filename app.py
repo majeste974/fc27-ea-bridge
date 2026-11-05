@@ -12,7 +12,7 @@ from fc_clubs_api import FC27API
 
 app = Flask(__name__)
 
-VERSION = "7.8.1"
+VERSION = "7.8.2"
 CACHE_SECONDS = 300
 MAX_RESPONSE_BYTES = 1_500_000
 
@@ -288,6 +288,11 @@ def club_friendlies(club_id):
             "error": "INVALID_CLUB_ID"
         }, 400)
 
+    # Opt-in only: legacy callers keep their flattened match records.
+    output_format = request.args.get("format", "records")
+    if output_format not in ("records", "raw"):
+        return reply({"ok": False, "error": "INVALID_FORMAT"}, 400)
+
     try:
         def load():
             api = FC27API()
@@ -295,7 +300,8 @@ def club_friendlies(club_id):
             matches = api.get_club_matches(
                 int(club_id),
                 match_type="friendlyMatch",
-                count=10
+                count=10,
+                output=output_format
             )
 
             matches = safe_ea_data(matches)
@@ -314,7 +320,7 @@ def club_friendlies(club_id):
             }
 
         result = cached_result(
-            "friendlies:" + club_id,
+            "friendlies:" + club_id + ":" + output_format,
             load
         )
 
