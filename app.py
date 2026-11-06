@@ -13,7 +13,7 @@ from fc_clubs_api import FC27API
 
 app = Flask(__name__)
 
-VERSION = "7.8.4"
+VERSION = "7.8.5"
 CACHE_SECONDS = 300
 MAX_RESPONSE_BYTES = 1_500_000
 
@@ -57,7 +57,7 @@ def protect_bridge():
     return None
 
 
-def cached_result(key, callback, ttl=CACHE_SECONDS):
+def cached_result(key, callback, ttl=CACHE_SECONDS, stale_ttl=0):
     now = time.time()
 
     with cache_lock:
@@ -66,10 +66,17 @@ def cached_result(key, callback, ttl=CACHE_SECONDS):
         if saved and saved["expires"] > now:
             return {
                 **saved["result"],
-                "cached": True
+                "cached": True,
+                "stale": False
             }
 
-    result = callback()
+    try:
+        result = callback()
+    except Exception:
+        # Public recent-match display only. Official imports never opt in.
+        if stale_ttl and saved and time.time() <= saved["expires"] + stale_ttl:
+            return {**saved["result"], "cached": True, "stale": True}
+        raise
 
     with cache_lock:
         if len(cache) > 100:
@@ -82,7 +89,8 @@ def cached_result(key, callback, ttl=CACHE_SECONDS):
 
     return {
         **result,
-        "cached": False
+        "cached": False,
+        "stale": False
     }
 
 
@@ -322,7 +330,8 @@ def club_friendlies(club_id):
 
         result = cached_result(
             "friendlies:" + club_id + ":" + output_format,
-            load
+            load,
+            ttl=60
         )
 
         return reply(result)
@@ -361,7 +370,7 @@ def club_recent_matches(club_id):
             return {"ok": True, "clubId": int(club_id), "source": "EA FC27", "readOnly": True,
                     "data": data, "matchesCount": len(data), "unavailableTypes": sorted(unavailable),
                     "fetchedAt": datetime.now(timezone.utc).isoformat()}
-        return reply(cached_result("recent:" + club_id, load, ttl=60))
+        return reply(cached_result("recent:" + club_id, load, ttl=60, stale_ttl=900))
     except Exception as error:
         return handle_error(error)
 

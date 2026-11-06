@@ -39,3 +39,26 @@ class CompleteRecentTests(RecentTests):
             r=self.request()
         self.assertEqual(r.status_code,200)
         self.assertEqual(len(r.json['data']),30)
+
+class AvailabilityTests(RecentTests):
+    def test_recent_fallback_is_limited_and_keeps_original_timestamp(self):
+        first=self.request().json
+        bridge.cache['recent:66712']['expires']=bridge.time.time()-1
+        FakeAPI.fail={'leagueMatch','playoffMatch','friendlyMatch'}
+        fallback=self.request()
+        self.assertEqual(fallback.status_code,200)
+        self.assertTrue(fallback.json['stale'])
+        self.assertEqual(fallback.json['fetchedAt'],first['fetchedAt'])
+        self.assertEqual(fallback.json['data'],first['data'])
+        bridge.cache['recent:66712']['expires']=bridge.time.time()-901
+        self.assertEqual(self.request().status_code,502)
+    def test_official_source_never_returns_stale_data(self):
+        with patch.dict(os.environ,{'FC27_BRIDGE_SECRET':KEY}),patch.object(bridge,'FC27API',FakeAPI):
+            path='/api/club/66712/friendlies?format=raw'
+            first=self.client.get(path,headers={'X-FC27-Bridge-Key':KEY})
+            self.assertEqual(first.status_code,200)
+            key='friendlies:66712:raw'
+            self.assertLessEqual(bridge.cache[key]['expires']-bridge.time.time(),60)
+            bridge.cache[key]['expires']=bridge.time.time()-1
+            FakeAPI.fail={'friendlyMatch'}
+            self.assertEqual(self.client.get(path,headers={'X-FC27-Bridge-Key':KEY}).status_code,502)
